@@ -24,7 +24,12 @@ ENTRY_DATA = {
 # bf0e822 "Incorrect casting of default value" (PR #414)
 
 
-def _make_hub(hass, entry_data=None, entry_options=None):
+def _make_hub(
+    hass,
+    entry_data=None,
+    entry_options=None,
+    runtime_versions=("4.10.0", "0.6.2", "2026.9.3"),
+):
     hass.data[DOMAIN] = {"yaml": {}}
     return SolarEdgeModbusMultiHub(
         hass,
@@ -32,7 +37,14 @@ def _make_hub(hass, entry_data=None, entry_options=None):
         entry_data if entry_data is not None else ENTRY_DATA,
         entry_options if entry_options is not None else {},
         MockModbusConnection(),
+        runtime_versions=runtime_versions,
     )
+
+
+async def test_unavailable_evidence_versions_do_not_break_hub(hass):
+    hub = _make_hub(hass, runtime_versions=None)
+    assert hub.powermind_evidence is None
+    assert hub.connection is not None
 
 
 async def test_options_default_to_int(hass):

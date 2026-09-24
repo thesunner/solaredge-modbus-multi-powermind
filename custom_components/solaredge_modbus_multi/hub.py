@@ -148,7 +148,14 @@ def _log_component_fields(prefix: str, component) -> None:
 
 class SolarEdgeModbusMultiHub:
     def __init__(
-        self, hass: HomeAssistant, entry_id: str, entry_data, entry_options, connection
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        entry_data,
+        entry_options,
+        connection,
+        *,
+        runtime_versions: tuple[str, str, str] | None = None,
     ):
         """Initialize the Modbus hub."""
         self._hass = hass
@@ -215,6 +222,7 @@ class SolarEdgeModbusMultiHub:
                 host=self._host,
                 port=self._port,
                 inverter_units=self._inverter_list,
+                runtime_versions=runtime_versions,
             )
         except Exception:
             _LOGGER.exception("PowerMind AC-energy producer initialization failed")

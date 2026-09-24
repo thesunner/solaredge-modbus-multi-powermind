@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import importlib.metadata
 import importlib.util
 import logging
 from datetime import UTC, datetime, timedelta
@@ -83,7 +84,7 @@ def producer_factory(evidence_module):
             inverter_units=units,
             clock=clock or iter([START, START + timedelta(milliseconds=10)]).__next__,
             epoch_factory=lambda: epoch,
-            versions=lambda: ("4.10.0", "0.6.2", "2026.9.3"),
+            runtime_versions=("4.10.0", "0.6.2", "2026.9.3"),
             capability=capability,
         )
         return producer, inverter, events
@@ -221,12 +222,14 @@ def test_new_producer_uses_new_epoch(evidence_module):
         host="example.invalid",
         port=1502,
         inverter_units=(1,),
+        runtime_versions=("4.10.0", "0.6.2", "2026.9.3"),
     )
     second = evidence_module.PowerMindEvidenceProducer(
         SimpleNamespace(bus=SimpleNamespace(async_fire=lambda *_: None)),
         host="example.invalid",
         port=1502,
         inverter_units=(1,),
+        runtime_versions=("4.10.0", "0.6.2", "2026.9.3"),
     )
     assert first.epoch_id != second.epoch_id
 
@@ -257,20 +260,76 @@ def test_clock_exception_publishes_timing_failure_without_interrupting_read(
     assert datetime.fromisoformat(events[0][1]["read_started_at"]).tzinfo is not None
 
 
-def test_runtime_versions_are_read_from_package_metadata(evidence_module, monkeypatch):
-    seen = []
+def test_publication_reuses_resolved_versions_without_metadata_lookup(
+    evidence_module, monkeypatch
+):
+    events = []
+    hass = SimpleNamespace(
+        bus=SimpleNamespace(
+            async_fire=lambda event_type, data: events.append((event_type, data))
+        )
+    )
+    inverter = SimpleNamespace(
+        inverter_unit_id=1,
+        manufacturer="Synthetic Manufacturer",
+        model="Synthetic Model",
+        serial="SYNTHETIC-SERIAL",
+        device_address="synthetic-address",
+    )
 
-    def package_version(name):
-        seen.append(name)
-        return {
-            "modbus-connection": "4.10.0",
-            "tmodbus": "0.6.2",
-            "homeassistant": "2026.9.3",
-        }[name]
+    def blocking_lookup(_):
+        raise AssertionError("metadata lookup ran on the publication path")
 
-    monkeypatch.setattr(evidence_module, "version", package_version)
-    assert evidence_module._runtime_versions() == ("4.10.0", "0.6.2", "2026.9.3")
-    assert seen == ["modbus-connection", "tmodbus", "homeassistant"]
+    monkeypatch.setattr(importlib.metadata, "version", blocking_lookup)
+    times = iter(START + timedelta(seconds=i) for i in range(4))
+    producer = evidence_module.PowerMindEvidenceProducer(
+        hass,
+        host="example.invalid",
+        port=1502,
+        inverter_units=(1,),
+        clock=times.__next__,
+        epoch_factory=lambda: "epoch-1",
+        runtime_versions=("4.12.1", "0.6.2", "2026.9.3"),
+    )
+
+    component = SimpleNamespace(
+        AC_Energy_WH=123,
+        AC_Energy_WH_SF=0,
+        C_SunSpec_DID=101,
+        C_SunSpec_Length=50,
+    )
+    for _ in range(2):
+        producer.publish_acquisition(producer.begin(), inverter, component)
+
+    assert len(events) == 2
+    assert [payload["generation"] for _, payload in events] == [1, 2]
+    for event_type, payload in events:
+        assert event_type == "powermind_solaredge_ac_energy_acquisition"
+        assert set(payload) == FIELDS
+        assert payload["producer_version"] == "4.0.3-powermind-acquisition.2"
+        assert payload["adapter_revision"] == "solaredge-raw-ac-v1"
+        assert payload["profile_revision"] == "solaredge-profile-v1"
+        assert (
+            payload["modbus_connection_version"],
+            payload["tmodbus_version"],
+            payload["ha_version"],
+        ) == ("4.12.1", "0.6.2", "2026.9.3")
+
+
+@pytest.mark.parametrize(
+    "runtime_versions",
+    [None, ("", "0.6.2", "2026.9.3"), ("4.12.1", "0.6.2")],
+)
+def test_missing_runtime_versions_fail_closed(evidence_module, runtime_versions):
+    hass = SimpleNamespace(bus=SimpleNamespace(async_fire=lambda *_: None))
+    with pytest.raises(ValueError, match="runtime versions"):
+        evidence_module.PowerMindEvidenceProducer(
+            hass,
+            host="example.invalid",
+            port=1502,
+            inverter_units=(1,),
+            runtime_versions=runtime_versions,
+        )
 
 
 def test_publication_error_is_contained(producer_factory):
@@ -464,3 +523,16 @@ async def test_hub_hook_bus_failure_does_not_break_solar_refresh(
     read_method, _ = inverter_read_method
     await read_method(inverter)
     assert events == []
+
+
+@pytest.mark.asyncio
+async def test_hub_hook_without_evidence_keeps_normal_read(inverter_read_method):
+    reads = []
+
+    async def component_update(_, component):
+        reads.append(component)
+
+    inverter = make_hook_inverter(None, component_update)
+    read_method, _ = inverter_read_method
+    await read_method(inverter)
+    assert reads == [inverter.inverter_common, inverter.inverter_data]

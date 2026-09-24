@@ -14,14 +14,13 @@ import hashlib
 import json
 import logging
 from datetime import UTC, datetime
-from importlib.metadata import version
 from uuid import uuid4
 
 _LOGGER = logging.getLogger(__name__)
 
 ACQUISITION_EVENT = "powermind_solaredge_ac_energy_acquisition"
 FAILURE_EVENT = "powermind_solaredge_ac_energy_failure"
-PRODUCER_VERSION = "4.0.3-powermind-acquisition.1"
+PRODUCER_VERSION = "4.0.3-powermind-acquisition.2"
 ADAPTER_REVISION = "solaredge-raw-ac-v1"
 PROFILE_REVISION = "solaredge-profile-v1"
 
@@ -51,10 +50,6 @@ def normalize_scale_factor(value: object) -> int | None:
     return value - 0x10000 if value >= 0x8000 else value
 
 
-def _runtime_versions() -> tuple[str, str, str]:
-    return (version("modbus-connection"), version("tmodbus"), version("homeassistant"))
-
-
 class PowerMindEvidenceProducer:
     """One source/hub lifecycle, one never-reused epoch and monotonic generation."""
 
@@ -67,9 +62,18 @@ class PowerMindEvidenceProducer:
         inverter_units,
         clock=None,
         epoch_factory=None,
-        versions=None,
+        runtime_versions: tuple[str, str, str] | None = None,
         capability: dict | None = None,
     ) -> None:
+        if (
+            not isinstance(runtime_versions, tuple)
+            or len(runtime_versions) != 3
+            or any(
+                not isinstance(value, str) or not value.strip()
+                for value in runtime_versions
+            )
+        ):
+            raise ValueError("PowerMind runtime versions are unavailable")
         self.hass = hass
         self.host = host
         self.port = port
@@ -82,7 +86,7 @@ class PowerMindEvidenceProducer:
         self.epoch_id = str((epoch_factory or uuid4)())
         self.generation = 0
         self.clock = clock or (lambda: datetime.now(UTC))
-        self.versions = versions or _runtime_versions
+        self.runtime_versions = runtime_versions
         self.capability = {**DEFAULT_CAPABILITY, **(capability or {})}
         self.capability_fingerprint = _fingerprint(self.capability)
         if not self.enabled:
@@ -177,7 +181,7 @@ class PowerMindEvidenceProducer:
                 or not -10 <= raw_sf <= 10
             ):
                 failure_class = "RAW_FIELD_ERROR"
-            modbus_version, tmodbus_version, ha_version = self.versions()
+            modbus_version, tmodbus_version, ha_version = self.runtime_versions
             payload = {
                 "source_id": "solaredge_pv",
                 "epoch_id": self.epoch_id,
