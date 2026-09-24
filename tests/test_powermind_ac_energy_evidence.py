@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import importlib.metadata
 import importlib.util
 import logging
@@ -73,9 +74,12 @@ def producer_factory(evidence_module, tmp_path):
     ):
         events = []
         hass = SimpleNamespace(
+            async_add_executor_job=lambda function, *args: asyncio.to_thread(
+                function, *args
+            ),
             bus=SimpleNamespace(
                 async_fire=lambda event_type, data: events.append((event_type, data))
-            )
+            ),
         )
         inverter = SimpleNamespace(
             inverter_unit_id=1,
@@ -113,7 +117,7 @@ def acquire(producer, inverter, *, wh=0, sf=0, did=101, length=50):
         C_SunSpec_DID=did,
         C_SunSpec_Length=length,
     )
-    producer.publish_acquisition(attempt, inverter, component)
+    asyncio.run(producer.publish_acquisition(attempt, inverter, component))
 
 
 @pytest.mark.parametrize(
@@ -219,7 +223,7 @@ def test_failed_attempt_consumes_generation_and_never_reuses_raw(producer_factor
     producer, inverter, events = producer_factory(clock=times.__next__)
     acquire(producer, inverter, wh=100)
     attempt = producer.begin()
-    producer.publish_failure(attempt, inverter, "READ_ERROR")
+    asyncio.run(producer.publish_failure(attempt, inverter, "READ_ERROR"))
     acquire(producer, inverter, wh=101)
     assert [payload["generation"] for _, payload in events] == [1, 2, 3]
     assert events[0][1]["epoch_id"] == events[2][1]["epoch_id"]
@@ -280,9 +284,12 @@ def test_publication_reuses_resolved_versions_without_metadata_lookup(
 ):
     events = []
     hass = SimpleNamespace(
+        async_add_executor_job=lambda function, *args: asyncio.to_thread(
+            function, *args
+        ),
         bus=SimpleNamespace(
             async_fire=lambda event_type, data: events.append((event_type, data))
-        )
+        ),
     )
     inverter = SimpleNamespace(
         inverter_unit_id=1,
@@ -315,7 +322,7 @@ def test_publication_reuses_resolved_versions_without_metadata_lookup(
         C_SunSpec_Length=50,
     )
     for _ in range(2):
-        producer.publish_acquisition(producer.begin(), inverter, component)
+        asyncio.run(producer.publish_acquisition(producer.begin(), inverter, component))
 
     assert len(events) == 2
     assert [payload["generation"] for _, payload in events] == [1, 2]
@@ -406,8 +413,10 @@ def test_failure_identity_snapshot_error_is_contained(producer_factory):
             raise RuntimeError("field unreadable")
 
     attempt = producer.begin()
-    producer.publish_failure(
-        attempt, inverter, "IDENTITY_ERROR", component=BrokenComponent()
+    asyncio.run(
+        producer.publish_failure(
+            attempt, inverter, "IDENTITY_ERROR", component=BrokenComponent()
+        )
     )
     assert events[0][1]["failure_class"] == "IDENTITY_ERROR"
     assert events[0][1]["sunspec_did"] is None
@@ -576,6 +585,30 @@ async def test_hub_hook_bus_failure_does_not_break_solar_refresh(
     inverter = make_hook_inverter(producer, component_update)
     read_method, _ = inverter_read_method
     await read_method(inverter)
+    assert events == []
+
+
+@pytest.mark.asyncio
+async def test_hub_hook_journal_failure_does_not_break_solar_refresh(
+    producer_factory,
+    inverter_read_method,
+):
+    producer, _, events = producer_factory()
+    reads = []
+
+    def broken_append(*_):
+        raise OSError("disk unavailable")
+
+    producer.journal.append = broken_append
+
+    async def component_update(_, component):
+        reads.append(component)
+
+    inverter = make_hook_inverter(producer, component_update)
+    read_method, _ = inverter_read_method
+    await read_method(inverter)
+
+    assert reads == [inverter.inverter_common, inverter.inverter_data]
     assert events == []
 
 

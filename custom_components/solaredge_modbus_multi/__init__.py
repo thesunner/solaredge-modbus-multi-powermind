@@ -168,7 +168,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         journal = await hass.async_add_executor_job(
             EvidenceJournal.open, hass.config.path(".storage", journal_name)
         )
-        entry.async_on_unload(journal.close)
     except Exception:
         _LOGGER.exception("PowerMind evidence journal initialization failed")
 
@@ -185,6 +184,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         ),
         evidence_journal=journal,
     )
+    if solaredge_hub.powermind_evidence is not None:
+        try:
+            await solaredge_hub.powermind_evidence.async_start()
+        except Exception:
+            _LOGGER.exception("PowerMind evidence epoch initialization failed")
+            solaredge_hub.powermind_evidence = None
 
     coordinator = SolarEdgeCoordinator(
         hass,
@@ -196,6 +201,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "hub": solaredge_hub,
         "coordinator": coordinator,
         "dependency_versions": installed_versions,
+        "evidence_journal": journal,
     }
     if (
         journal is not None
@@ -217,6 +223,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
+        journal = hass.data[DOMAIN][entry.entry_id]["evidence_journal"]
+        if journal is not None:
+            await hass.async_add_executor_job(journal.close)
         hass.data[DOMAIN].pop(entry.entry_id)
 
     return unload_ok

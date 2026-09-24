@@ -88,8 +88,7 @@ class PowerMindEvidenceProducer:
         if journal is None:
             raise ValueError("PowerMind evidence journal is required")
         self.journal = journal
-        if self.enabled:
-            self.journal.start_epoch(self.epoch_id)
+        self._epoch_started = False
         self.generation = 0
         self.clock = clock or (lambda: datetime.now(UTC))
         self.runtime_versions = runtime_versions
@@ -99,6 +98,14 @@ class PowerMindEvidenceProducer:
             _LOGGER.warning(
                 "PowerMind AC-energy evidence disabled: exactly one inverter unit is required"
             )
+
+    async def async_start(self) -> None:
+        """Commit this producer's epoch without blocking the HA event loop."""
+        if self.enabled and not self._epoch_started:
+            await self.hass.async_add_executor_job(
+                self.journal.start_epoch, self.epoch_id
+            )
+            self._epoch_started = True
 
     def capture_time(self) -> datetime | None:
         """Capture a read boundary without interrupting an ordinary refresh."""
@@ -148,7 +155,7 @@ class PowerMindEvidenceProducer:
             return None
         return value.astimezone(UTC).isoformat()
 
-    def _publish(
+    async def _publish(
         self,
         attempt,
         inverter,
@@ -213,12 +220,13 @@ class PowerMindEvidenceProducer:
                 "failure_class": failure_class,
             }
             event = ACQUISITION_EVENT if failure_class == "NONE" else FAILURE_EVENT
-            self.journal.append(event, payload)
+            await self.async_start()
+            await self.hass.async_add_executor_job(self.journal.append, event, payload)
             self.hass.bus.async_fire(event, payload)
         except Exception:
             _LOGGER.exception("PowerMind AC-energy evidence publication failed")
 
-    def publish_acquisition(
+    async def publish_acquisition(
         self, attempt, inverter, component, *, completed_at=None
     ) -> None:
         """Publish only values from the just-completed InverterData update."""
@@ -231,14 +239,14 @@ class PowerMindEvidenceProducer:
             did = component.C_SunSpec_DID
             length = component.C_SunSpec_Length
         except Exception:  # noqa: BLE001 - evidence must never break a refresh
-            self._publish(
+            await self._publish(
                 attempt,
                 inverter,
                 completed_at=completed_at,
                 failure_class="RAW_FIELD_ERROR",
             )
             return
-        self._publish(
+        await self._publish(
             attempt,
             inverter,
             completed_at=completed_at,
@@ -249,7 +257,7 @@ class PowerMindEvidenceProducer:
             length=length,
         )
 
-    def publish_failure(
+    async def publish_failure(
         self,
         attempt,
         inverter,
@@ -268,7 +276,7 @@ class PowerMindEvidenceProducer:
         except Exception:
             _LOGGER.exception("PowerMind AC-energy identity snapshot failed")
             did = length = None
-        self._publish(
+        await self._publish(
             attempt,
             inverter,
             completed_at=completed_at,

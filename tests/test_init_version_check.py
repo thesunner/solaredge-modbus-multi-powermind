@@ -100,6 +100,34 @@ async def test_setup_resolves_versions_in_executor_once_before_evidence_publicat
 
     event_loop_thread = threading.get_ident()
     lookups = []
+    journal_calls = []
+    original_open = integration.EvidenceJournal.open
+    original_start = integration.EvidenceJournal.start_epoch
+    original_append = integration.EvidenceJournal.append
+    original_close = integration.EvidenceJournal.close
+
+    def tracked_open(path):
+        journal_calls.append(("open", threading.get_ident()))
+        return original_open(path)
+
+    def tracked_start(self, epoch_id):
+        journal_calls.append(("start", threading.get_ident()))
+        return original_start(self, epoch_id)
+
+    def tracked_append(self, event_type, payload):
+        journal_calls.append(("append", threading.get_ident()))
+        result = original_append(self, event_type, payload)
+        journal_calls.append(("committed", threading.get_ident()))
+        return result
+
+    def tracked_close(self):
+        journal_calls.append(("close", threading.get_ident()))
+        return original_close(self)
+
+    monkeypatch.setattr(integration.EvidenceJournal, "open", tracked_open)
+    monkeypatch.setattr(integration.EvidenceJournal, "start_epoch", tracked_start)
+    monkeypatch.setattr(integration.EvidenceJournal, "append", tracked_append)
+    monkeypatch.setattr(integration.EvidenceJournal, "close", tracked_close)
     installed = {"tmodbus": "0.6.2", "modbus_connection": "4.12.1"}
 
     def package_version(name):
@@ -125,6 +153,9 @@ async def test_setup_resolves_versions_in_executor_once_before_evidence_publicat
     async def forward_entry_setups(*_args):
         pass
 
+    async def unload_platforms(*_args):
+        return True
+
     class FakeHass:
         def __init__(self):
             self.data = {DOMAIN: {"yaml": {}}}
@@ -132,19 +163,21 @@ async def test_setup_resolves_versions_in_executor_once_before_evidence_publicat
                 path=lambda *parts: str(tmp_path.joinpath(*parts))
             )
             self.events = []
-            self.bus = SimpleNamespace(
-                async_fire=lambda event_type, data: self.events.append(
-                    (event_type, data)
-                )
-            )
+
+            def fire(event_type, data):
+                journal_calls.append(("fire", threading.get_ident()))
+                self.events.append((event_type, data))
+
+            self.bus = SimpleNamespace(async_fire=fire)
             self.config_entries = SimpleNamespace(
-                async_forward_entry_setups=forward_entry_setups
+                async_forward_entry_setups=forward_entry_setups,
+                async_unload_platforms=unload_platforms,
             )
             self.executor_jobs = 0
 
-        async def async_add_executor_job(self, function):
+        async def async_add_executor_job(self, function, *args):
             self.executor_jobs += 1
-            return await asyncio.to_thread(function)
+            return await asyncio.to_thread(function, *args)
 
     monkeypatch.setattr(modbus_transport, "ModbusConnection", FakeConnection)
     monkeypatch.setattr(integration, "SolarEdgeCoordinator", FakeCoordinator)
@@ -183,9 +216,9 @@ async def test_setup_resolves_versions_in_executor_once_before_evidence_publicat
     )
     producer.clock = times.__next__
     for _ in range(2):
-        producer.publish_acquisition(producer.begin(), inverter, component)
+        await producer.publish_acquisition(producer.begin(), inverter, component)
 
-    assert hass.executor_jobs == 2
+    assert hass.executor_jobs == 5
     assert [name for name, _ in lookups] == ["tmodbus", "modbus_connection"]
     assert {thread_id for _, thread_id in lookups}.isdisjoint({event_loop_thread})
     assert len(hass.events) == 2
@@ -194,9 +227,33 @@ async def test_setup_resolves_versions_in_executor_once_before_evidence_publicat
     page = replay.page(after=None)
     assert page["protocol_revision"] == "solaredge-evidence-replay-v1"
     assert [record["payload"]["generation"] for record in page["records"]] == [1, 2]
+    assert [name for name, _ in journal_calls] == [
+        "open",
+        "start",
+        "append",
+        "committed",
+        "fire",
+        "append",
+        "committed",
+        "fire",
+    ]
+    assert all(
+        thread_id != event_loop_thread
+        for name, thread_id in journal_calls
+        if name in {"open", "start", "append", "committed"}
+    )
+    assert all(
+        thread_id == event_loop_thread
+        for name, thread_id in journal_calls
+        if name == "fire"
+    )
     for _, payload in hass.events:
         assert (
             payload["modbus_connection_version"],
             payload["tmodbus_version"],
             payload["ha_version"],
         ) == ("4.12.1", "0.6.2", HA_VERSION)
+
+    assert await integration.async_unload_entry(hass, entry) is True
+    assert journal_calls[-1][0] == "close"
+    assert journal_calls[-1][1] != event_loop_thread
