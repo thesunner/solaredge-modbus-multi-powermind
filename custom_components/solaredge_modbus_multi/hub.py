@@ -60,6 +60,7 @@ from .const import (
     SunSpecNotImpl,
 )
 from .helpers import float_to_hex
+from .powermind_evidence import PowerMindEvidenceProducer
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -205,6 +206,19 @@ class SolarEdgeModbusMultiHub:
         self.inverter_common = {}
         self.mmppt_common = {}
         self._write_settle_cycles: dict[int, int] = {}
+
+        # One producer epoch belongs to this configured hub lifecycle. Multiple
+        # inverter units cannot share PowerMind's single solaredge_pv source.
+        try:
+            self.powermind_evidence = PowerMindEvidenceProducer(
+                hass,
+                host=self._host,
+                port=self._port,
+                inverter_units=self._inverter_list,
+            )
+        except Exception:
+            _LOGGER.exception("PowerMind AC-energy producer initialization failed")
+            self.powermind_evidence = None
 
         self._initalized = False
         self._coordinator_timeouts_count = 0
@@ -930,7 +944,20 @@ class SolarEdgeInverter:
             _LOGGER.debug(
                 f"Reading component InverterData(for_unit({self.inverter_unit_id}))"
             )
-            await self.hub.component_update(self.inverter_unit_id, self.inverter_data)
+            producer = getattr(self.hub, "powermind_evidence", None)
+            attempt = producer.begin() if producer is not None else None
+            try:
+                await self.hub.component_update(
+                    self.inverter_unit_id, self.inverter_data
+                )
+            except Exception:
+                if producer is not None:
+                    completed_at = producer.capture_time()
+                    producer.publish_failure(
+                        attempt, self, "READ_ERROR", completed_at=completed_at
+                    )
+                raise
+            completed_at = producer.capture_time() if producer is not None else None
 
             _log_component_fields(f"I{self.inverter_unit_id}", self.inverter_data)
 
@@ -939,7 +966,20 @@ class SolarEdgeInverter:
                 or self.inverter_data.C_SunSpec_DID not in [101, 102, 103]
                 or self.inverter_data.C_SunSpec_Length != 50
             ):
+                if producer is not None:
+                    producer.publish_failure(
+                        attempt,
+                        self,
+                        "IDENTITY_ERROR",
+                        completed_at=completed_at,
+                        component=self.inverter_data,
+                    )
                 raise DeviceInvalid(f"Inverter {self.inverter_unit_id} not usable.")
+
+            if producer is not None:
+                producer.publish_acquisition(
+                    attempt, self, self.inverter_data, completed_at=completed_at
+                )
 
         except ModbusConnectionError as e:
             raise ModbusConnectionError(
