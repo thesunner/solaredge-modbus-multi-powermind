@@ -117,7 +117,9 @@ def acquire(producer, inverter, *, wh=0, sf=0, did=101, length=50):
         C_SunSpec_DID=did,
         C_SunSpec_Length=length,
     )
-    asyncio.run(producer.publish_acquisition(attempt, inverter, component))
+    asyncio.get_event_loop().run_until_complete(
+        producer.publish_acquisition(attempt, inverter, component)
+    )
 
 
 @pytest.mark.parametrize(
@@ -223,7 +225,9 @@ def test_failed_attempt_consumes_generation_and_never_reuses_raw(producer_factor
     producer, inverter, events = producer_factory(clock=times.__next__)
     acquire(producer, inverter, wh=100)
     attempt = producer.begin()
-    asyncio.run(producer.publish_failure(attempt, inverter, "READ_ERROR"))
+    asyncio.get_event_loop().run_until_complete(
+        producer.publish_failure(attempt, inverter, "READ_ERROR")
+    )
     acquire(producer, inverter, wh=101)
     assert [payload["generation"] for _, payload in events] == [1, 2, 3]
     assert events[0][1]["epoch_id"] == events[2][1]["epoch_id"]
@@ -322,7 +326,9 @@ def test_publication_reuses_resolved_versions_without_metadata_lookup(
         C_SunSpec_Length=50,
     )
     for _ in range(2):
-        asyncio.run(producer.publish_acquisition(producer.begin(), inverter, component))
+        asyncio.get_event_loop().run_until_complete(
+            producer.publish_acquisition(producer.begin(), inverter, component)
+        )
 
     assert len(events) == 2
     assert [payload["generation"] for _, payload in events] == [1, 2]
@@ -413,7 +419,7 @@ def test_failure_identity_snapshot_error_is_contained(producer_factory):
             raise RuntimeError("field unreadable")
 
     attempt = producer.begin()
-    asyncio.run(
+    asyncio.get_event_loop().run_until_complete(
         producer.publish_failure(
             attempt, inverter, "IDENTITY_ERROR", component=BrokenComponent()
         )
