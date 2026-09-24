@@ -20,7 +20,7 @@ _LOGGER = logging.getLogger(__name__)
 
 ACQUISITION_EVENT = "powermind_solaredge_ac_energy_acquisition"
 FAILURE_EVENT = "powermind_solaredge_ac_energy_failure"
-PRODUCER_VERSION = "4.0.3-powermind-acquisition.2"
+PRODUCER_VERSION = "4.0.3-powermind-acquisition.3"
 ADAPTER_REVISION = "solaredge-raw-ac-v1"
 PROFILE_REVISION = "solaredge-profile-v1"
 
@@ -60,6 +60,7 @@ class PowerMindEvidenceProducer:
         host: str,
         port: int,
         inverter_units,
+        journal,
         clock=None,
         epoch_factory=None,
         runtime_versions: tuple[str, str, str] | None = None,
@@ -84,6 +85,10 @@ class PowerMindEvidenceProducer:
             and self.inverter_units[0] > 0
         )
         self.epoch_id = str((epoch_factory or uuid4)())
+        if journal is None:
+            raise ValueError("PowerMind evidence journal is required")
+        self.journal = journal
+        self._epoch_started = False
         self.generation = 0
         self.clock = clock or (lambda: datetime.now(UTC))
         self.runtime_versions = runtime_versions
@@ -93,6 +98,14 @@ class PowerMindEvidenceProducer:
             _LOGGER.warning(
                 "PowerMind AC-energy evidence disabled: exactly one inverter unit is required"
             )
+
+    async def async_start(self) -> None:
+        """Commit this producer's epoch without blocking the HA event loop."""
+        if self.enabled and not self._epoch_started:
+            await self.hass.async_add_executor_job(
+                self.journal.start_epoch, self.epoch_id
+            )
+            self._epoch_started = True
 
     def capture_time(self) -> datetime | None:
         """Capture a read boundary without interrupting an ordinary refresh."""
@@ -142,7 +155,7 @@ class PowerMindEvidenceProducer:
             return None
         return value.astimezone(UTC).isoformat()
 
-    def _publish(
+    async def _publish(
         self,
         attempt,
         inverter,
@@ -181,6 +194,8 @@ class PowerMindEvidenceProducer:
                 or not -10 <= raw_sf <= 10
             ):
                 failure_class = "RAW_FIELD_ERROR"
+            if failure_class == "RAW_FIELD_ERROR":
+                raw_wh = raw_sf = None
             modbus_version, tmodbus_version, ha_version = self.runtime_versions
             payload = {
                 "source_id": "solaredge_pv",
@@ -205,11 +220,13 @@ class PowerMindEvidenceProducer:
                 "failure_class": failure_class,
             }
             event = ACQUISITION_EVENT if failure_class == "NONE" else FAILURE_EVENT
+            await self.async_start()
+            await self.hass.async_add_executor_job(self.journal.append, event, payload)
             self.hass.bus.async_fire(event, payload)
         except Exception:
             _LOGGER.exception("PowerMind AC-energy evidence publication failed")
 
-    def publish_acquisition(
+    async def publish_acquisition(
         self, attempt, inverter, component, *, completed_at=None
     ) -> None:
         """Publish only values from the just-completed InverterData update."""
@@ -222,14 +239,14 @@ class PowerMindEvidenceProducer:
             did = component.C_SunSpec_DID
             length = component.C_SunSpec_Length
         except Exception:  # noqa: BLE001 - evidence must never break a refresh
-            self._publish(
+            await self._publish(
                 attempt,
                 inverter,
                 completed_at=completed_at,
                 failure_class="RAW_FIELD_ERROR",
             )
             return
-        self._publish(
+        await self._publish(
             attempt,
             inverter,
             completed_at=completed_at,
@@ -240,7 +257,7 @@ class PowerMindEvidenceProducer:
             length=length,
         )
 
-    def publish_failure(
+    async def publish_failure(
         self,
         attempt,
         inverter,
@@ -259,7 +276,7 @@ class PowerMindEvidenceProducer:
         except Exception:
             _LOGGER.exception("PowerMind AC-energy identity snapshot failed")
             did = length = None
-        self._publish(
+        await self._publish(
             attempt,
             inverter,
             completed_at=completed_at,

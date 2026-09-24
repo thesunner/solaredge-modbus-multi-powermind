@@ -156,6 +156,7 @@ class SolarEdgeModbusMultiHub:
         connection,
         *,
         runtime_versions: tuple[str, str, str] | None = None,
+        evidence_journal=None,
     ):
         """Initialize the Modbus hub."""
         self._hass = hass
@@ -223,6 +224,7 @@ class SolarEdgeModbusMultiHub:
                 port=self._port,
                 inverter_units=self._inverter_list,
                 runtime_versions=runtime_versions,
+                journal=evidence_journal,
             )
         except Exception:
             _LOGGER.exception("PowerMind AC-energy producer initialization failed")
@@ -964,7 +966,7 @@ class SolarEdgeInverter:
             except Exception:
                 if producer is not None:
                     completed_at = producer.capture_time()
-                    producer.publish_failure(
+                    await producer.publish_failure(
                         attempt, self, "READ_ERROR", completed_at=completed_at
                     )
                 raise
@@ -978,7 +980,7 @@ class SolarEdgeInverter:
                 or self.inverter_data.C_SunSpec_Length != 50
             ):
                 if producer is not None:
-                    producer.publish_failure(
+                    await producer.publish_failure(
                         attempt,
                         self,
                         "IDENTITY_ERROR",
@@ -988,7 +990,7 @@ class SolarEdgeInverter:
                 raise DeviceInvalid(f"Inverter {self.inverter_unit_id} not usable.")
 
             if producer is not None:
-                producer.publish_acquisition(
+                await producer.publish_acquisition(
                     attempt, self, self.inverter_data, completed_at=completed_at
                 )
 

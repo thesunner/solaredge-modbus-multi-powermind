@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib.metadata
 import logging
 from datetime import timedelta
@@ -37,6 +38,7 @@ from .const import (
     RetrySettings,
 )
 from .helpers import safe_version_tuple
+from .powermind_journal import EvidenceJournal
 
 if TYPE_CHECKING:
     from .hub import SolarEdgeModbusMultiHub
@@ -157,6 +159,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     entry.async_on_unload(connection.close)
 
+    journal = None
+    journal_name = (
+        f"{DOMAIN}_powermind_evidence_"
+        f"{hashlib.sha256(entry.entry_id.encode()).hexdigest()}.sqlite3"
+    )
+    try:
+        journal = await hass.async_add_executor_job(
+            EvidenceJournal.open, hass.config.path(".storage", journal_name)
+        )
+    except Exception:
+        _LOGGER.exception("PowerMind evidence journal initialization failed")
+
     solaredge_hub = SolarEdgeModbusMultiHub(
         hass,
         entry.entry_id,
@@ -168,7 +182,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             installed_versions.get("tmodbus"),
             HA_VERSION,
         ),
+        evidence_journal=journal,
     )
+    if solaredge_hub.powermind_evidence is not None:
+        try:
+            await solaredge_hub.powermind_evidence.async_start()
+        except Exception:
+            _LOGGER.exception("PowerMind evidence epoch initialization failed")
+            solaredge_hub.powermind_evidence = None
 
     coordinator = SolarEdgeCoordinator(
         hass,
@@ -180,7 +201,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "hub": solaredge_hub,
         "coordinator": coordinator,
         "dependency_versions": installed_versions,
+        "evidence_journal": journal,
     }
+    if (
+        journal is not None
+        and solaredge_hub.powermind_evidence is not None
+        and solaredge_hub.powermind_evidence.enabled
+    ):
+        hass.data[DOMAIN][entry.entry_id]["evidence_replay"] = journal.reader()
 
     await coordinator.async_config_entry_first_refresh()
 
@@ -195,6 +223,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
+        journal = hass.data[DOMAIN][entry.entry_id]["evidence_journal"]
+        if journal is not None:
+            await hass.async_add_executor_job(journal.close)
         hass.data[DOMAIN].pop(entry.entry_id)
 
     return unload_ok
