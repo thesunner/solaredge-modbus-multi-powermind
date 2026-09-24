@@ -16,6 +16,7 @@ from homeassistant.const import (
     CONF_SCAN_INTERVAL,
     Platform,
 )
+from homeassistant.const import __version__ as HA_VERSION
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryError
 from homeassistant.helpers import issue_registry as ir
@@ -157,7 +158,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.async_on_unload(connection.close)
 
     solaredge_hub = SolarEdgeModbusMultiHub(
-        hass, entry.entry_id, entry.data, entry.options, connection
+        hass,
+        entry.entry_id,
+        entry.data,
+        entry.options,
+        connection,
+        runtime_versions=(
+            installed_versions.get("modbus-connection"),
+            installed_versions.get("tmodbus"),
+            HA_VERSION,
+        ),
     )
 
     coordinator = SolarEdgeCoordinator(
