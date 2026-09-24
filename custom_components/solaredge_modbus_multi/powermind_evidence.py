@@ -20,7 +20,7 @@ _LOGGER = logging.getLogger(__name__)
 
 ACQUISITION_EVENT = "powermind_solaredge_ac_energy_acquisition"
 FAILURE_EVENT = "powermind_solaredge_ac_energy_failure"
-PRODUCER_VERSION = "4.0.3-powermind-acquisition.2"
+PRODUCER_VERSION = "4.0.3-powermind-acquisition.3"
 ADAPTER_REVISION = "solaredge-raw-ac-v1"
 PROFILE_REVISION = "solaredge-profile-v1"
 
@@ -60,6 +60,7 @@ class PowerMindEvidenceProducer:
         host: str,
         port: int,
         inverter_units,
+        journal,
         clock=None,
         epoch_factory=None,
         runtime_versions: tuple[str, str, str] | None = None,
@@ -84,6 +85,11 @@ class PowerMindEvidenceProducer:
             and self.inverter_units[0] > 0
         )
         self.epoch_id = str((epoch_factory or uuid4)())
+        if journal is None:
+            raise ValueError("PowerMind evidence journal is required")
+        self.journal = journal
+        if self.enabled:
+            self.journal.start_epoch(self.epoch_id)
         self.generation = 0
         self.clock = clock or (lambda: datetime.now(UTC))
         self.runtime_versions = runtime_versions
@@ -181,6 +187,8 @@ class PowerMindEvidenceProducer:
                 or not -10 <= raw_sf <= 10
             ):
                 failure_class = "RAW_FIELD_ERROR"
+            if failure_class == "RAW_FIELD_ERROR":
+                raw_wh = raw_sf = None
             modbus_version, tmodbus_version, ha_version = self.runtime_versions
             payload = {
                 "source_id": "solaredge_pv",
@@ -205,6 +213,7 @@ class PowerMindEvidenceProducer:
                 "failure_class": failure_class,
             }
             event = ACQUISITION_EVENT if failure_class == "NONE" else FAILURE_EVENT
+            self.journal.append(event, payload)
             self.hass.bus.async_fire(event, payload)
         except Exception:
             _LOGGER.exception("PowerMind AC-energy evidence publication failed")

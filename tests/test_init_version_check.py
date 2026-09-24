@@ -92,6 +92,7 @@ class TestCheckDependencyVersions:
 @pytest.mark.asyncio
 async def test_setup_resolves_versions_in_executor_once_before_evidence_publication(
     monkeypatch,
+    tmp_path,
 ):
     import modbus_connection.tmodbus as modbus_transport
 
@@ -127,6 +128,9 @@ async def test_setup_resolves_versions_in_executor_once_before_evidence_publicat
     class FakeHass:
         def __init__(self):
             self.data = {DOMAIN: {"yaml": {}}}
+            self.config = SimpleNamespace(
+                path=lambda *parts: str(tmp_path.joinpath(*parts))
+            )
             self.events = []
             self.bus = SimpleNamespace(
                 async_fire=lambda event_type, data: self.events.append(
@@ -181,10 +185,15 @@ async def test_setup_resolves_versions_in_executor_once_before_evidence_publicat
     for _ in range(2):
         producer.publish_acquisition(producer.begin(), inverter, component)
 
-    assert hass.executor_jobs == 1
+    assert hass.executor_jobs == 2
     assert [name for name, _ in lookups] == ["tmodbus", "modbus_connection"]
     assert {thread_id for _, thread_id in lookups}.isdisjoint({event_loop_thread})
     assert len(hass.events) == 2
+    replay = hass.data[DOMAIN][entry.entry_id]["evidence_replay"]
+    assert not hasattr(replay, "append")
+    page = replay.page(after=None)
+    assert page["protocol_revision"] == "solaredge-evidence-replay-v1"
+    assert [record["payload"]["generation"] for record in page["records"]] == [1, 2]
     for _, payload in hass.events:
         assert (
             payload["modbus_connection_version"],

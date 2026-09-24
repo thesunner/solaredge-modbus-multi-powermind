@@ -156,6 +156,7 @@ class SolarEdgeModbusMultiHub:
         connection,
         *,
         runtime_versions: tuple[str, str, str] | None = None,
+        evidence_journal=None,
     ):
         """Initialize the Modbus hub."""
         self._hass = hass
@@ -223,6 +224,7 @@ class SolarEdgeModbusMultiHub:
                 port=self._port,
                 inverter_units=self._inverter_list,
                 runtime_versions=runtime_versions,
+                journal=evidence_journal,
             )
         except Exception:
             _LOGGER.exception("PowerMind AC-energy producer initialization failed")

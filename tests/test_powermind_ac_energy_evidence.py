@@ -46,6 +46,16 @@ FIELDS = {
 START = datetime(2026, 9, 24, 10, 0, tzinfo=UTC)
 
 
+def _open_test_journal(path):
+    spec = importlib.util.spec_from_file_location(
+        "powermind_journal", MODULE.with_name("powermind_journal.py")
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.EvidenceJournal.open(path)
+
+
 @pytest.fixture
 def evidence_module():
     assert MODULE.is_file(), "PowerMind evidence producer module is missing"
@@ -57,7 +67,7 @@ def evidence_module():
 
 
 @pytest.fixture
-def producer_factory(evidence_module):
+def producer_factory(evidence_module, tmp_path):
     def make(
         *, identity=None, clock=None, units=(1,), epoch="epoch-1", capability=None
     ):
@@ -86,6 +96,9 @@ def producer_factory(evidence_module):
             epoch_factory=lambda: epoch,
             runtime_versions=("4.10.0", "0.6.2", "2026.9.3"),
             capability=capability,
+            journal=_open_test_journal(
+                tmp_path / f"{len(list(tmp_path.iterdir()))}.sqlite3"
+            ),
         )
         return producer, inverter, events
 
@@ -216,13 +229,14 @@ def test_failed_attempt_consumes_generation_and_never_reuses_raw(producer_factor
     assert set(events[1][1]) == FIELDS
 
 
-def test_new_producer_uses_new_epoch(evidence_module):
+def test_new_producer_uses_new_epoch(evidence_module, tmp_path):
     first = evidence_module.PowerMindEvidenceProducer(
         SimpleNamespace(bus=SimpleNamespace(async_fire=lambda *_: None)),
         host="example.invalid",
         port=1502,
         inverter_units=(1,),
         runtime_versions=("4.10.0", "0.6.2", "2026.9.3"),
+        journal=_open_test_journal(tmp_path / "first.sqlite3"),
     )
     second = evidence_module.PowerMindEvidenceProducer(
         SimpleNamespace(bus=SimpleNamespace(async_fire=lambda *_: None)),
@@ -230,6 +244,7 @@ def test_new_producer_uses_new_epoch(evidence_module):
         port=1502,
         inverter_units=(1,),
         runtime_versions=("4.10.0", "0.6.2", "2026.9.3"),
+        journal=_open_test_journal(tmp_path / "second.sqlite3"),
     )
     assert first.epoch_id != second.epoch_id
 
@@ -261,7 +276,7 @@ def test_clock_exception_publishes_timing_failure_without_interrupting_read(
 
 
 def test_publication_reuses_resolved_versions_without_metadata_lookup(
-    evidence_module, monkeypatch
+    evidence_module, monkeypatch, tmp_path
 ):
     events = []
     hass = SimpleNamespace(
@@ -290,6 +305,7 @@ def test_publication_reuses_resolved_versions_without_metadata_lookup(
         clock=times.__next__,
         epoch_factory=lambda: "epoch-1",
         runtime_versions=("4.12.1", "0.6.2", "2026.9.3"),
+        journal=_open_test_journal(tmp_path / "versions.sqlite3"),
     )
 
     component = SimpleNamespace(
@@ -306,7 +322,7 @@ def test_publication_reuses_resolved_versions_without_metadata_lookup(
     for event_type, payload in events:
         assert event_type == "powermind_solaredge_ac_energy_acquisition"
         assert set(payload) == FIELDS
-        assert payload["producer_version"] == "4.0.3-powermind-acquisition.2"
+        assert payload["producer_version"] == "4.0.3-powermind-acquisition.3"
         assert payload["adapter_revision"] == "solaredge-raw-ac-v1"
         assert payload["profile_revision"] == "solaredge-profile-v1"
         assert (
@@ -320,7 +336,9 @@ def test_publication_reuses_resolved_versions_without_metadata_lookup(
     "runtime_versions",
     [None, ("", "0.6.2", "2026.9.3"), ("4.12.1", "0.6.2")],
 )
-def test_missing_runtime_versions_fail_closed(evidence_module, runtime_versions):
+def test_missing_runtime_versions_fail_closed(
+    evidence_module, runtime_versions, tmp_path
+):
     hass = SimpleNamespace(bus=SimpleNamespace(async_fire=lambda *_: None))
     with pytest.raises(ValueError, match="runtime versions"):
         evidence_module.PowerMindEvidenceProducer(
@@ -329,6 +347,7 @@ def test_missing_runtime_versions_fail_closed(evidence_module, runtime_versions)
             port=1502,
             inverter_units=(1,),
             runtime_versions=runtime_versions,
+            journal=_open_test_journal(tmp_path / "invalid.sqlite3"),
         )
 
 
@@ -340,6 +359,41 @@ def test_publication_error_is_contained(producer_factory):
 
     producer.hass.bus.async_fire = broken_fire
     acquire(producer, inverter)
+    assert events == []
+
+
+def test_event_is_visible_to_second_connection_before_bus_delivery(
+    producer_factory, tmp_path
+):
+    producer, inverter, events = producer_factory()
+    journal_path = next(tmp_path.glob("*.sqlite3"))
+
+    def inspect_at_delivery(event_type, payload):
+        reader = _open_test_journal(journal_path)
+        try:
+            records = reader.page(after=None)["records"]
+            assert [(r["event_type"], r["payload"]) for r in records] == [
+                (event_type, payload)
+            ]
+        finally:
+            reader.close()
+        events.append((event_type, payload))
+
+    producer.hass.bus.async_fire = inspect_at_delivery
+    acquire(producer, inverter, wh=123)
+    assert len(events) == 1
+
+
+def test_journal_write_failure_suppresses_event_without_breaking_refresh(
+    producer_factory,
+):
+    producer, inverter, events = producer_factory()
+
+    def broken_append(*_):
+        raise OSError("disk unavailable")
+
+    producer.journal.append = broken_append
+    acquire(producer, inverter, wh=123)
     assert events == []
 
 
