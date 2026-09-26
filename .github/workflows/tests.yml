@@ -18,8 +18,15 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
-          python-version: "3.13"
+          python-version: "3.14.6"
       - name: Install test dependencies
         run: pip install -r requirements-test.txt
+      - name: Qualification static checks
+        run: |
+          python --version
+          python -m pip install ruff==0.16.8
+          ruff format --check .
+          ruff check --select E,F,I --ignore E501 .
+          git diff --check
       - name: Run tests
-        run: pytest tests/ -v
+        run: python -m pytest tests/ -q -p no:cacheprovider
