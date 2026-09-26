@@ -340,7 +340,7 @@ def test_publication_reuses_resolved_versions_without_metadata_lookup(
     for event_type, payload in events:
         assert event_type == "powermind_solaredge_ac_energy_acquisition"
         assert set(payload) == FIELDS
-        assert payload["producer_version"] == "4.0.3-powermind-acquisition.3"
+        assert payload["producer_version"] == "4.0.4-powermind-acquisition.3"
         assert payload["adapter_revision"] == "solaredge-raw-ac-v1"
         assert payload["profile_revision"] == "solaredge-profile-v1"
         assert (

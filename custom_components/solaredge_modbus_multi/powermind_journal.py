@@ -102,7 +102,8 @@ class EvidenceJournal:
             db.execute("PRAGMA journal_mode=DELETE")
             with db:
                 db.execute(
-                    "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+                    "CREATE TABLE IF NOT EXISTS meta "
+                    "(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
                 )
                 db.execute(
                     "CREATE TABLE IF NOT EXISTS epochs (epoch_id TEXT PRIMARY KEY)"

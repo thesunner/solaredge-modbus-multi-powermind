@@ -20,7 +20,7 @@ _LOGGER = logging.getLogger(__name__)
 
 ACQUISITION_EVENT = "powermind_solaredge_ac_energy_acquisition"
 FAILURE_EVENT = "powermind_solaredge_ac_energy_failure"
-PRODUCER_VERSION = "4.0.3-powermind-acquisition.3"
+PRODUCER_VERSION = "4.0.4-powermind-acquisition.3"
 ADAPTER_REVISION = "solaredge-raw-ac-v1"
 PROFILE_REVISION = "solaredge-profile-v1"
 
@@ -96,7 +96,8 @@ class PowerMindEvidenceProducer:
         self.capability_fingerprint = _fingerprint(self.capability)
         if not self.enabled:
             _LOGGER.warning(
-                "PowerMind AC-energy evidence disabled: exactly one inverter unit is required"
+                "PowerMind AC-energy evidence disabled: exactly one inverter unit "
+                "is required"
             )
 
     async def async_start(self) -> None:

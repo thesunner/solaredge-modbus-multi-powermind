@@ -34,7 +34,7 @@ def event(generation, *, epoch="epoch-one", failure=False, raw=100):
         "generation": generation,
         "source_identity_fingerprint": "sha256:" + "a" * 64,
         "capability_fingerprint": "sha256:" + "b" * 64,
-        "producer_version": "4.0.3-powermind-acquisition.3",
+        "producer_version": "4.0.4-powermind-acquisition.3",
         "modbus_connection_version": "4.10.0",
         "tmodbus_version": "0.6.2",
         "ha_version": "2026.9.3",
